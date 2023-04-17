@@ -7,8 +7,16 @@ import pandas as pd
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM
-from models import DialoGPTModel, DialoGPTUnlikelihoodModel
-from custom_datasets import EnPersonaChat, EnPersonaChatUnlikelihood
+from models import DialoGPTUnlikelihoodModel
+from custom_datasets import PersonaChatDataset
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+
+
+parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
+
+parser.add_argument('--debug', help="if True, logging is in cmd instead of wandb", action='store_true')
+parser.add_argument("--loss", help="choose loss: nll or ul", type=str, default='nll')
+parser.add_argument("--bs", help="batch size", type=int, default=1)
 
 
 def create_config():
@@ -31,7 +39,7 @@ def create_config():
             'value': 2
         },
         'lr': {
-            'value': 1e-05
+            'value': 1e-04
         },
         'batch_size': {
             'value': 8
@@ -48,7 +56,10 @@ def create_config():
 
 
 def collate_regular(examples):
-    return pad_sequence(examples, batch_first=True, padding_value=50256)
+    inputs = []
+    for ex in examples:
+        inputs.append(ex['input_ids'])
+    return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=50256)}
 
 
 def collate_with_negatives(examples):
@@ -74,8 +85,8 @@ def prepare_data(tokenizer, data_part, loss_type, batch_size):
         train = pd.read_csv('data/train.csv')
 
     if loss_type == 'nll':
-        valid_dataset = EnPersonaChat(valid, tokenizer)
-        train_dataset = EnPersonaChat(train, tokenizer)
+        valid_dataset = PersonaChatDataset(valid, tokenizer, add_negatives=False)
+        train_dataset = PersonaChatDataset(train, tokenizer, add_negatives=False)
         train_dataloader = DataLoader(
             train_dataset, batch_size=batch_size, collate_fn=collate_regular, shuffle=True
         )
@@ -83,8 +94,8 @@ def prepare_data(tokenizer, data_part, loss_type, batch_size):
             valid_dataset, batch_size=batch_size, collate_fn=collate_regular, shuffle=True
         )
     else:
-        valid_dataset = EnPersonaChatUnlikelihood(valid, tokenizer)
-        train_dataset = EnPersonaChatUnlikelihood(train, tokenizer)
+        valid_dataset = PersonaChatDataset(valid, tokenizer, add_negatives=True)
+        train_dataset = PersonaChatDataset(train, tokenizer, add_negatives=True)
         train_dataloader = DataLoader(
             train_dataset, batch_size=batch_size, collate_fn=collate_with_negatives, shuffle=True
         )
@@ -106,7 +117,9 @@ def train_net(config=None):
 
         tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
         tokenizer._pad_token = tokenizer.eos_token
+        tokenizer.add_special_tokens({'additional_special_tokens': ['<|persona|>']})
         model = AutoModelForCausalLM.from_pretrained("microsoft/DialoGPT-medium")
+        model.resize_token_embeddings(len(tokenizer))
 
         train_dataloader, valid_dataloader = prepare_data(
             tokenizer,
@@ -115,17 +128,16 @@ def train_net(config=None):
             config.batch_size
         )
 
-        optimizer = torch.optim.AdamW(params=model.parameters(), lr=1e-05)
+        optimizer = torch.optim.AdamW(params=model.parameters(), lr=config.lr)
         device = 'cuda'
         if config.loss_type == 'nll':
-            answer_model = DialoGPTModel(model, device=device)
+            DialoGPTUnlikelihoodModel(model, tokenizer, device='cuda', parallel=False, ul_training=False)
         else:
-            answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device)
+            answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device, ul_training=True)
+        trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer, log_wandb=True, sample=False)
 
-        trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer)
 
-
-def debug_train():
+def debug_train(loss_type, batch_size):
     tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
     tokenizer._pad_token = tokenizer.eos_token
     tokenizer.add_special_tokens({'additional_special_tokens': ['<|persona|>']})
@@ -135,21 +147,25 @@ def debug_train():
     train_dataloader, valid_dataloader = prepare_data(
         tokenizer,
         'only-valid',
-        'ul',
-        2
+        loss_type=loss_type,
+        batch_size=batch_size
     )
 
-    optimizer = torch.optim.AdamW(params=model.parameters(), lr=1e-05)
-    device = 'cuda'
-
-    answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device, parallel=True)
-    trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer)
+    ul_training = True
+    if loss_type == 'nll':
+        ul_training = False
+    optimizer = torch.optim.AdamW(params=model.parameters(), lr=1e-04)
+    answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device='cuda', parallel=False, ul_training=ul_training)
+    trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer, log_wandb=False, sample=True)
 
 
 if __name__ == "__main__":
-    debug_train()
-    # wandb.login()
-    #
-    # sweep_config = create_config()
-    # sweep_id = wandb.sweep(sweep_config, project="unlikelihood-loss")
-    # wandb.agent(sweep_id, train_net)
+    args = parser.parse_args()
+    if args.debug:
+        debug_train(args.loss, args.bs)
+    else:
+        wandb.login()
+
+        sweep_config = create_config()
+        sweep_id = wandb.sweep(sweep_config, project="unlikelihood-loss")
+        wandb.agent(sweep_id, train_net)
