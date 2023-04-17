@@ -2,6 +2,7 @@ import torch
 import wandb
 from collections import Counter
 import torch.nn.functional as F
+from torch.nn import DataParallel
 
 
 class DialoGPTModel:
@@ -11,7 +12,7 @@ class DialoGPTModel:
         self.device = device
         self.parallel = parallel
         if self.parallel:
-            self.model = self.model.to(device)
+            self.model = DataParallel(self.model).to(device)
         else:
             self.model.to(device)
 
@@ -94,12 +95,13 @@ class DialoGPTModel:
 
 class DialoGPTUnlikelihoodModel:
 
-    def __init__(self, model, device, parallel=False):
+    def __init__(self, model, tokenizer, device, parallel=False):
         self.model = model
+        self.tokenizer = tokenizer
         self.device = device
         self.parallel = parallel
         if self.parallel:
-            self.model = self.model.to(device)
+            self.model = DataParallel(self.model).to(device)
         else:
             self.model.to(device)
 
@@ -120,6 +122,17 @@ class DialoGPTUnlikelihoodModel:
     def get_ul_loss(self, batch):
         neg_inputs = batch['negatives'].to(self.device)
         context_tokens = batch['context'].to(self.device)
+
+        # context = context_tokens.unsqueeze(1)
+        # context = context.expand(neg_inputs.shape[0], neg_inputs.shape[-2], -1)
+        # input_seq = torch.cat((context, neg_inputs), dim=-1)
+        # input_seq = input_seq.long()  # супер костыльно
+        # # не лонг бывает только когда в батче есть отсутствующие нег примеры
+        # # нужно просто их всех паддингами заполнять и потом ставить маску или что-то такое
+        # print(f'concat input shape: {input_seq.shape}')
+        # scores = self.model(input_seq).logits
+        # print(f'new scores: {scores.shape}')
+
         batch_num = neg_inputs.shape[0]
         all_losses = []
         for batch_ind in range(batch_num):  # по батчам
@@ -141,7 +154,6 @@ class DialoGPTUnlikelihoodModel:
             neg_tokens = neg_inputs[batch_ind].unsqueeze(-1)
             penalties = torch.gather(neg_scores, -1, neg_tokens)
             ul_loss = self.get_loss_from_penalties(penalties)
-            print(f'UL loss: {ul_loss}')
 
             if ul_loss != 0:
                 all_losses.append(ul_loss.reshape(1))
@@ -164,19 +176,22 @@ class DialoGPTUnlikelihoodModel:
                 output = self.model(input_ids=tokens, labels=labels)
                 loss = output['loss']
 
+                ul_loss = self.get_ul_loss(batch)
+                if ul_loss != 0:
+                    loss = loss + ul_loss
+
                 if self.parallel:
                     if torch.cuda.device_count() > 1:
                         loss = loss.mean()
 
                 val_loss += loss.item()
-                # TODO: add UL loss here too?
 
         avg_val_loss = val_loss / len(val_dataloader)
         val_ppl = torch.exp(torch.tensor(avg_val_loss))
 
         return avg_val_loss, val_ppl
 
-    def train(self, train_dataloader, val_dataloader, optimizer, n_epoch=3, checkpoint_step=100):
+    def train(self, train_dataloader, val_dataloader, optimizer, n_epoch=3, checkpoint_step=20):
 
         for epoch in range(n_epoch):
 
@@ -184,32 +199,32 @@ class DialoGPTUnlikelihoodModel:
 
             train_loss = 0
             for step_num, batch in enumerate(train_dataloader):
+                print(f'step {step_num}')
                 ids = batch['input_ids'].to(self.device)
                 labels = batch['input_ids'].to(self.device)
 
                 output = self.model(input_ids=ids, labels=labels)
-                loss = output['loss']
+                nll_loss = output['loss']
+
+                ul_loss = self.get_ul_loss(batch)
+                loss = nll_loss
+                if ul_loss != 0:
+                    loss += ul_loss
 
                 if self.parallel:
                     if torch.cuda.device_count() > 1:
                         loss = loss.mean()
-
-                ul_loss = self.get_ul_loss(batch)
-                print(ul_loss)
-                # wandb.log({
-                #     "batch train UL loss": ul_loss,
-                #     "batch train NLL loss": loss
-                # })
-                if ul_loss != 0:
-                    loss = loss + ul_loss
 
                 train_loss += loss.item()
 
                 self.model.zero_grad()
                 loss.backward()
                 optimizer.step()
-
-                # wandb.log({"batch train loss": loss.item()})
+                # wandb.log({
+                #     "batch train UL loss": ul_loss,
+                #     "batch train NLL loss": loss,
+                #      "batch train loss": loss.item()
+                # })
 
                 if step_num != 0 and step_num % checkpoint_step == 0:
                     step_loss = train_loss / step_num
@@ -219,11 +234,12 @@ class DialoGPTUnlikelihoodModel:
                     #     "step train ppl": step_ppl,
                     #     "step": step_num + epoch * len(train_dataloader)
                     # })
-                    step_val_loss, step_val_ppl = self.validate(val_dataloader)
+                    # step_val_loss, step_val_ppl = self.validate(val_dataloader)
                     # wandb.log({
                     #     "step val loss": step_val_loss,
                     #     "step val ppl": step_val_ppl
                     # })
+                    self.sample(ids, step_num)
 
             avg_val_loss, val_ppl = self.validate(val_dataloader)
             avg_train_loss = train_loss / len(train_dataloader)
@@ -233,3 +249,12 @@ class DialoGPTUnlikelihoodModel:
             #            "train ppl": train_ppl, "val ppl": val_ppl,
             #            "epoch": epoch})
         return self.model
+
+    def sample(self, ids, step_num):
+        print(f'Step num: {step_num}. Generating a sample...')
+        output = self.model.generate(ids, temperature=0.9, max_length=100)
+        for k, out in enumerate(output):
+            prompt = self.tokenizer.decode(ids[k])
+            decoded_output = self.tokenizer.decode(out)
+            print(f'input: {prompt}')
+            print(f'output: {decoded_output.replace(prompt, "")}')

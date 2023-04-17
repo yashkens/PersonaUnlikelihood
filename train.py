@@ -28,13 +28,13 @@ def create_config():
 
     parameters_dict.update({
         'epochs': {
-            'value': 20
+            'value': 2
         },
         'lr': {
             'value': 1e-05
         },
         'batch_size': {
-            'value': 1
+            'value': 8
         },
         'seed': {
             'value': 42
@@ -55,10 +55,12 @@ def collate_with_negatives(examples):
     inputs, negs, conts = [], [], []
     for ex in examples:
         inputs.append(ex['input_ids'])
-        negs.append(ex['negatives'])
+        negs.append(ex['negatives'].T)
         conts.append(ex['context'])
+    negatives = pad_sequence(negs, batch_first=True, padding_value=50256)
+    negatives.transpose(2, 1)
     return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=50256),
-            'negatives': pad_sequence(negs, batch_first=True, padding_value=50256),
+            'negatives': negatives,
             'context': pad_sequence(conts, batch_first=True, padding_value=50256)}
 
 
@@ -118,7 +120,7 @@ def train_net(config=None):
         if config.loss_type == 'nll':
             answer_model = DialoGPTModel(model, device=device)
         else:
-            answer_model = DialoGPTUnlikelihoodModel(model, device=device)
+            answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device)
 
         trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer)
 
@@ -126,19 +128,21 @@ def train_net(config=None):
 def debug_train():
     tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
     tokenizer._pad_token = tokenizer.eos_token
+    tokenizer.add_special_tokens({'additional_special_tokens': ['<|persona|>']})
     model = AutoModelForCausalLM.from_pretrained("microsoft/DialoGPT-medium")
+    model.resize_token_embeddings(len(tokenizer))
 
     train_dataloader, valid_dataloader = prepare_data(
         tokenizer,
         'only-valid',
         'ul',
-        1
+        2
     )
 
     optimizer = torch.optim.AdamW(params=model.parameters(), lr=1e-05)
     device = 'cuda'
 
-    answer_model = DialoGPTUnlikelihoodModel(model, device=device)
+    answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device, parallel=True)
     trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer)
 
 
