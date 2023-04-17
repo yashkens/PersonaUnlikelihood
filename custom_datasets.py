@@ -41,7 +41,6 @@ class EnPersonaChatUnlikelihood(Dataset):
             encoding = self.tokenizer.encode(neg_cand, return_tensors='pt')
             neg_encodings.append(encoding.squeeze(0))
         neg_encodings = pad_sequence(neg_encodings, batch_first=True, padding_value=50256)
-        print(f'neg_encodings_shape: {neg_encodings.shape}')
         return neg_encodings
 
     def __getitem__(self, idx):
