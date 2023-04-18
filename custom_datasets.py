@@ -85,31 +85,33 @@ class NegativesAsSeparateExDataset(Dataset):
         persona_encoding = self.encode_persona(idx).squeeze(0)
         reward_value = int(self.data.iloc[idx]['reward'])
 
-        full_input = ''
         context = ''
+        response = ''
         for column in self.columns:
             input_tokens = self.data.iloc[idx][column]
             if not input_tokens.strip():
                 continue
-            full_input += input_tokens
             if column != 'response':
                 context += input_tokens
                 context += ' <|endoftext|> '
-                full_input += ' <|endoftext|> '
+            else:
+                response += input_tokens
 
-        context_encoding = self.tokenizer.encode(context, return_tensors='pt').squeeze(0)
-        response_encoding = self.tokenizer.encode(context, return_tensors='pt').squeeze(0)
-        encoding = torch.cat([persona_encoding, context_encoding, response_encoding], dim=-1)
+        response_encoding = self.tokenizer.encode(response, return_tensors='pt').squeeze(0)
+
+        if context:
+            context_encoding = self.tokenizer.encode(context, return_tensors='pt').squeeze(0)
+            encoding = torch.cat([persona_encoding, context_encoding, response_encoding], dim=-1)
+            context_len = context_encoding.shape[-1]
+        else:
+            encoding = torch.cat([persona_encoding, response_encoding], dim=-1)
+            context_len = 0
 
         # rewards are given only to responses
         # so loss will be computed only for responses too
-        reward_seq = [0] * (persona_encoding.shape[-1] + context_encoding.shape[-1])
-        reward_seq.extend([reward_value] * response_encoding)
+        reward_seq = [0] * (persona_encoding.shape[-1] + context_len)
+        reward_seq.extend([reward_value] * response_encoding.shape[-1])
         reward_seq = torch.tensor(reward_seq)
-
-        print(f'encoding: {encoding}')
-        print(f'reward seq: {reward_seq}')
-
         return {'input_ids': encoding, 'reward': reward_seq}
 
     def __len__(self):

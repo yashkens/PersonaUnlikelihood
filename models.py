@@ -34,7 +34,7 @@ class DialoGPTUnlikelihoodModel:
             logger.info(f'Output: {decoded_output.replace(prompt, "")}')
 
     def get_mle_loss(self, notnull, batch_rewards, scores_view, targets_view):
-        mle_notnull = notnull & (batch_rewards > 0).unsqueeze(1).expand_as(notnull)
+        mle_notnull = notnull & (batch_rewards > 0).expand_as(notnull)
         mle_target_tokens = mle_notnull.long().sum()
         mle_loss = (
                 F.nll_loss(
@@ -47,7 +47,7 @@ class DialoGPTUnlikelihoodModel:
         return mle_loss
 
     def get_ul_loss(self, notnull, batch_rewards, scores_view, targets_view):
-        ul_notnull = notnull & (batch_rewards < 0).unsqueeze(1).expand_as(notnull)
+        ul_notnull = notnull & (batch_rewards < 0).expand_as(notnull)
         ul_target_tokens = ul_notnull.long().sum()
         range_ = torch.arange(targets_view.size(0)).to(self.device)
         ul_scores = scores_view[range_, targets_view]
@@ -70,16 +70,16 @@ class DialoGPTUnlikelihoodModel:
         with torch.no_grad():
             for batch in val_dataloader:
                 ids = batch['input_ids'].to(self.device)
-                batch_rewards = batch['rewards'].to(self.device)
+                batch_rewards = batch['reward'].to(self.device)
                 output = self.model(input_ids=ids, labels=ids)
                 scores = output.logits
 
                 scores = F.log_softmax(scores, dim=-1)
                 scores_view = scores.view(-1, scores.size(-1))
-                targets = batch
+                targets = ids
                 targets_view = targets.view(-1)
 
-                notnull = targets.ne(self.tokenizer.pad_token_id[0])
+                notnull = targets.ne(self.tokenizer.pad_token_id)
                 mle_loss = self.get_mle_loss(notnull, batch_rewards, scores_view, targets_view)
                 ul_loss = self.get_ul_loss(notnull, batch_rewards, scores_view, targets_view)
 
@@ -114,16 +114,16 @@ class DialoGPTUnlikelihoodModel:
             for step_num, batch in enumerate(train_dataloader):
                 logger.info(f'Step {step_num}')
                 ids = batch['input_ids'].to(self.device)
-                batch_rewards = batch['rewards'].to(self.device)
+                batch_rewards = batch['reward'].to(self.device)
                 output = self.model(input_ids=ids, labels=ids)
                 scores = output.logits
 
                 scores = F.log_softmax(scores, dim=-1)
                 scores_view = scores.view(-1, scores.size(-1))
-                targets = batch
+                targets = ids
                 targets_view = targets.view(-1)
 
-                notnull = targets.ne(self.tokenizer.pad_token_id[0])
+                notnull = targets.ne(self.tokenizer.pad_token_id)
                 mle_loss = self.get_mle_loss(notnull, batch_rewards, scores_view, targets_view)
                 print(f'mle loss: {mle_loss:.4f}')
                 ul_loss = self.get_ul_loss(notnull, batch_rewards, scores_view, targets_view)

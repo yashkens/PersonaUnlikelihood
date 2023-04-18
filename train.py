@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModelForCausalLM
 from models import DialoGPTUnlikelihoodModel
-from custom_datasets import PersonaChatDataset
+from custom_datasets import PersonaChatDataset, NegativesAsSeparateExDataset
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
 
@@ -86,12 +86,12 @@ def collate_with_negatives_separately(examples):
 
 def prepare_data(tokenizer, data_part, loss_type, batch_size):
     if data_part == 'only-valid':
-        df = pd.read_csv('data/valid.csv')
+        df = pd.read_csv('data_neg_sep/valid.csv')
         valid = df.iloc[:1500]
         train = df.iloc[1500:]
     else:
-        valid = pd.read_csv('data/valid.csv')
-        train = pd.read_csv('data/train.csv')
+        valid = pd.read_csv('data_neg_sep/valid.csv')
+        train = pd.read_csv('data_neg_sep/train.csv')
 
     if loss_type == 'nll':
         valid_dataset = PersonaChatDataset(valid, tokenizer, add_negatives=False)
@@ -103,13 +103,13 @@ def prepare_data(tokenizer, data_part, loss_type, batch_size):
             valid_dataset, batch_size=batch_size, collate_fn=collate_regular, shuffle=True
         )
     else:
-        valid_dataset = PersonaChatDataset(valid, tokenizer, add_negatives=True)
-        train_dataset = PersonaChatDataset(train, tokenizer, add_negatives=True)
+        valid_dataset = NegativesAsSeparateExDataset(valid, tokenizer)
+        train_dataset = NegativesAsSeparateExDataset(train, tokenizer)
         train_dataloader = DataLoader(
-            train_dataset, batch_size=batch_size, collate_fn=collate_with_negatives, shuffle=True
+            train_dataset, batch_size=batch_size, collate_fn=collate_with_negatives_separately, shuffle=True
         )
         valid_dataloader = DataLoader(
-            valid_dataset, batch_size=batch_size, collate_fn=collate_with_negatives, shuffle=True
+            valid_dataset, batch_size=batch_size, collate_fn=collate_with_negatives_separately, shuffle=True
         )
     return train_dataloader, valid_dataloader
 
