@@ -64,3 +64,53 @@ class PersonaChatDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
+
+
+class NegativesAsSeparateExDataset(Dataset):
+    def __init__(self, data, tokenizer):
+        self.tokenizer = tokenizer
+        self.data = data
+        self.columns = ['context_3', 'context_2', 'context_1', 'response']
+
+    def encode_persona(self, idx):
+        persona = self.data.iloc[idx]['speaker_persona'] + ' <|persona|> '
+        encoding = self.tokenizer.encode(
+            persona,
+            return_tensors='pt'
+            )
+        return encoding
+
+    def __getitem__(self, idx):
+
+        persona_encoding = self.encode_persona(idx).squeeze(0)
+        reward_value = int(self.data.iloc[idx]['reward'])
+
+        full_input = ''
+        context = ''
+        for column in self.columns:
+            input_tokens = self.data.iloc[idx][column]
+            if not input_tokens.strip():
+                continue
+            full_input += input_tokens
+            if column != 'response':
+                context += input_tokens
+                context += ' <|endoftext|> '
+                full_input += ' <|endoftext|> '
+
+        context_encoding = self.tokenizer.encode(context, return_tensors='pt').squeeze(0)
+        response_encoding = self.tokenizer.encode(context, return_tensors='pt').squeeze(0)
+        encoding = torch.cat([persona_encoding, context_encoding, response_encoding], dim=-1)
+
+        # rewards are given only to responses
+        # so loss will be computed only for responses too
+        reward_seq = [0] * (persona_encoding.shape[-1] + context_encoding.shape[-1])
+        reward_seq.extend([reward_value] * response_encoding)
+        reward_seq = torch.tensor(reward_seq)
+
+        print(f'encoding: {encoding}')
+        print(f'reward seq: {reward_seq}')
+
+        return {'input_ids': encoding, 'reward': reward_seq}
+
+    def __len__(self):
+        return len(self.data)

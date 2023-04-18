@@ -75,6 +75,15 @@ def collate_with_negatives(examples):
             'context': pad_sequence(conts, batch_first=True, padding_value=50256)}
 
 
+def collate_with_negatives_separately(examples):
+    inputs, rewards = [], []
+    for ex in examples:
+        inputs.append(ex['input_ids'])
+        rewards.append(ex['reward'])
+    return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=50256),
+            'reward': pad_sequence(rewards, batch_first=True, padding_value=50256)}
+
+
 def prepare_data(tokenizer, data_part, loss_type, batch_size):
     if data_part == 'only-valid':
         df = pd.read_csv('data/valid.csv')
@@ -131,7 +140,7 @@ def train_net(config=None):
         optimizer = torch.optim.AdamW(params=model.parameters(), lr=config.lr)
         device = 'cuda'
         if config.loss_type == 'nll':
-            DialoGPTUnlikelihoodModel(model, tokenizer, device='cuda', parallel=False, ul_training=False)
+            answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device='cuda', parallel=False)
         else:
             answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device, ul_training=True)
         trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer, log_wandb=True, sample=False)
@@ -151,11 +160,8 @@ def debug_train(loss_type, batch_size):
         batch_size=batch_size
     )
 
-    ul_training = True
-    if loss_type == 'nll':
-        ul_training = False
     optimizer = torch.optim.AdamW(params=model.parameters(), lr=1e-04)
-    answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device='cuda', parallel=False, ul_training=ul_training)
+    answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device='cuda', parallel=False, ul_training=True)
     trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer, log_wandb=False, sample=True)
 
 

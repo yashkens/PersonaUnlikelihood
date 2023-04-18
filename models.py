@@ -11,7 +11,7 @@ logger = logging.getLogger()
 
 class DialoGPTUnlikelihoodModel:
 
-    def __init__(self, model, tokenizer, device, ul_training=True, parallel=False):
+    def __init__(self, model, tokenizer, device, ul_training=False, parallel=False):
         self.model = model
         self.tokenizer = tokenizer
         self.ul_training = ul_training
@@ -33,43 +33,34 @@ class DialoGPTUnlikelihoodModel:
             logger.info(f'Input: {prompt}')
             logger.info(f'Output: {decoded_output.replace(prompt, "")}')
 
-    def get_loss_from_penalties(self, penalties):
-        log_penalties = torch.log(1 - penalties)
-        ul_loss = - torch.sum(log_penalties)
+    def get_mle_loss(self, notnull, batch_rewards, scores_view, targets_view):
+        mle_notnull = notnull & (batch_rewards > 0).unsqueeze(1).expand_as(notnull)
+        mle_target_tokens = mle_notnull.long().sum()
+        mle_loss = (
+                F.nll_loss(
+                    scores_view, targets_view, reduction='none'
+                ).view_as(mle_notnull)
+                * mle_notnull.float()
+        ).sum()
+        if mle_target_tokens > 0:
+            mle_loss /= mle_target_tokens
+        return mle_loss
+
+    def get_ul_loss(self, notnull, batch_rewards, scores_view, targets_view):
+        ul_notnull = notnull & (batch_rewards < 0).unsqueeze(1).expand_as(notnull)
+        ul_target_tokens = ul_notnull.long().sum()
+        range_ = torch.arange(targets_view.size(0)).to(self.device)
+        ul_scores = scores_view[range_, targets_view]
+        ul_loss = (
+                -torch.log(torch.clamp(1.0 - ul_scores.exp(), min=1e-6)).view_as(
+                    ul_notnull
+                )
+                * ul_notnull.float()
+        ).sum()
+        # TODO: why parlAI logs losses before average?
+        if ul_target_tokens > 0:
+            ul_loss /= ul_target_tokens
         return ul_loss
-
-    def get_ul_loss(self, batch):
-        neg_inputs = batch['negatives'].to(self.device)
-        context_tokens = batch['context'].to(self.device)
-
-        batch_num = neg_inputs.shape[0]
-        all_losses = []
-        for batch_ind in range(batch_num):  # TODO: убрать цикл, использовать торч
-            if (neg_inputs[batch_ind] == 0).all():
-                continue
-
-            if len(context_tokens[batch_ind]) > 0:
-                neg_cands_num = neg_inputs[batch_ind].shape[0]
-                context = context_tokens[batch_ind].unsqueeze(0)
-                context = context.expand(neg_cands_num, -1)
-                new_input_seq = torch.cat((context, neg_inputs[batch_ind]), dim=-1)
-            else:
-                new_input_seq = neg_inputs[batch_ind]
-
-            scores = self.model(new_input_seq).logits
-            neg_scores = scores[:, len(context_tokens[batch_ind].view(-1)):, :]
-            neg_scores = F.softmax(neg_scores, dim=-1)
-
-            neg_tokens = neg_inputs[batch_ind].unsqueeze(-1)
-            penalties = torch.gather(neg_scores, -1, neg_tokens)
-            ul_loss = self.get_loss_from_penalties(penalties)
-
-            if ul_loss != 0:
-                all_losses.append(ul_loss.reshape(1))
-        if not all_losses:
-            return 0
-        final_ul_loss = torch.mean(torch.cat(all_losses, dim=0))
-        return final_ul_loss
 
     def validate(self, val_dataloader):
 
@@ -79,13 +70,20 @@ class DialoGPTUnlikelihoodModel:
         with torch.no_grad():
             for batch in val_dataloader:
                 ids = batch['input_ids'].to(self.device)
+                batch_rewards = batch['rewards'].to(self.device)
                 output = self.model(input_ids=ids, labels=ids)
-                loss = output['loss']
+                scores = output.logits
 
-                if self.ul_training:
-                    ul_loss = self.get_ul_loss(batch)
-                    if ul_loss != 0:
-                        loss = loss + ul_loss
+                scores = F.log_softmax(scores, dim=-1)
+                scores_view = scores.view(-1, scores.size(-1))
+                targets = batch
+                targets_view = targets.view(-1)
+
+                notnull = targets.ne(self.tokenizer.pad_token_id[0])
+                mle_loss = self.get_mle_loss(notnull, batch_rewards, scores_view, targets_view)
+                ul_loss = self.get_ul_loss(notnull, batch_rewards, scores_view, targets_view)
+
+                loss = mle_loss + ul_loss
 
                 if self.parallel:
                     if torch.cuda.device_count() > 1:
@@ -116,17 +114,22 @@ class DialoGPTUnlikelihoodModel:
             for step_num, batch in enumerate(train_dataloader):
                 logger.info(f'Step {step_num}')
                 ids = batch['input_ids'].to(self.device)
+                batch_rewards = batch['rewards'].to(self.device)
                 output = self.model(input_ids=ids, labels=ids)
-                nll_loss = output['loss']
-                loss = nll_loss
-                ul_loss = 0
+                scores = output.logits
 
-                if self.ul_training:
-                    ul_loss = self.get_ul_loss(batch)
-                    logger.info(f'Got UL loss: {ul_loss:.4f}')
-                    if ul_loss != 0:
-                        loss = nll_loss + ul_loss
+                scores = F.log_softmax(scores, dim=-1)
+                scores_view = scores.view(-1, scores.size(-1))
+                targets = batch
+                targets_view = targets.view(-1)
 
+                notnull = targets.ne(self.tokenizer.pad_token_id[0])
+                mle_loss = self.get_mle_loss(notnull, batch_rewards, scores_view, targets_view)
+                print(f'mle loss: {mle_loss:.4f}')
+                ul_loss = self.get_ul_loss(notnull, batch_rewards, scores_view, targets_view)
+                print(f'ul loss: {ul_loss:.4f}')
+
+                loss = mle_loss + ul_loss
                 if self.parallel:
                     if torch.cuda.device_count() > 1:
                         loss = loss.mean()
@@ -139,9 +142,8 @@ class DialoGPTUnlikelihoodModel:
                 optimizer.step()
 
                 if log_wandb:
-                    losses_to_log = {'batch train NLL loss': nll_loss, 'batch train loss': loss.item()}
-                    if self.ul_training:
-                        losses_to_log['batch train UL loss'] = ul_loss
+                    losses_to_log = {'batch train NLL loss': mle_loss, 'batch train loss': loss.item(),
+                                     'batch train UL loss': ul_loss}
                     wandb.log(losses_to_log)
 
                 if step_num != 0 and step_num % checkpoint_step == 0:
