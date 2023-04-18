@@ -131,7 +131,7 @@ def train_net(config=None):
         optimizer = torch.optim.AdamW(params=model.parameters(), lr=config.lr)
         device = 'cuda'
         if config.loss_type == 'nll':
-            DialoGPTUnlikelihoodModel(model, tokenizer, device='cuda', parallel=False, ul_training=False)
+            answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device='cuda', parallel=False, ul_training=False)
         else:
             answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device, ul_training=True)
         trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer, log_wandb=True, sample=False)
