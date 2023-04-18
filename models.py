@@ -125,9 +125,7 @@ class DialoGPTUnlikelihoodModel:
 
                 notnull = targets.ne(self.tokenizer.pad_token_id)
                 mle_loss = self.get_mle_loss(notnull, batch_rewards, scores_view, targets_view)
-                print(f'mle loss: {mle_loss:.4f}')
                 ul_loss = self.get_ul_loss(notnull, batch_rewards, scores_view, targets_view)
-                print(f'ul loss: {ul_loss:.4f}')
 
                 loss = mle_loss + ul_loss
                 if self.parallel:
