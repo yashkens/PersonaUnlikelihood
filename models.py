@@ -55,7 +55,6 @@ class DialoGPTUnlikelihoodModel:
 
     def get_mle_loss(self, notnull, batch_rewards, scores_view, targets_view):
         mle_notnull = notnull & (batch_rewards > 0).expand_as(notnull)
-        print(f'MLE NOTNULL: {mle_notnull}')
         mle_target_tokens = mle_notnull.long().sum()
         mle_losses = (
                 F.nll_loss(
@@ -63,11 +62,9 @@ class DialoGPTUnlikelihoodModel:
                 ).view_as(mle_notnull)
                 * mle_notnull.float()
         )
-        print(f'MLE LOSSES BY TOKEN: {mle_losses}')
         mle_loss = mle_losses.sum()
         if mle_target_tokens > 0:
             mle_loss /= mle_target_tokens
-        print(f'MLE LOSS: {mle_loss}')
         return mle_loss
 
     def get_ul_loss(self, notnull, batch_rewards, scores_view, targets_view):
@@ -202,7 +199,7 @@ class DialoGPTUnlikelihoodModel:
                             else:
                                 wandb.log({"nll_generated_samples": copy(sample_table)})
 
-                    # step_val_loss, step_val_ppl = self.validate(val_dataloader)
+                    step_val_loss, step_val_ppl = self.validate(val_dataloader)
 
                     if log_wandb:
                         wandb.log({
@@ -210,7 +207,7 @@ class DialoGPTUnlikelihoodModel:
                             "step train ppl": step_ppl,
                             "step": step_num + epoch * len(train_dataloader)
                         })
-                        # wandb.log({"step val loss": step_val_loss, "step val ppl": step_val_ppl})
+                        wandb.log({"step val loss": step_val_loss, "step val ppl": step_val_ppl})
 
                 if step_num != 0 and step_num % save_step == 0:
                     torch.save(self.model.state_dict(), f'checkpoint_step_{step_num}_epoch_{epoch}')
