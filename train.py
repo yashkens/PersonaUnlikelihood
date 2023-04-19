@@ -36,13 +36,13 @@ def create_config():
 
     parameters_dict.update({
         'epochs': {
-            'value': 2
+            'value': 3
         },
         'lr': {
             'value': 1e-04
         },
         'batch_size': {
-            'value': 8
+            'value': 4
         },
         'seed': {
             'value': 42

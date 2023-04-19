@@ -101,7 +101,7 @@ class DialoGPTUnlikelihoodModel:
             val_dataloader,
             optimizer,
             n_epoch=3,
-            checkpoint_step=20,
+            checkpoint_step=50,
             log_wandb=False,
             sample=False,
     ):
@@ -112,7 +112,7 @@ class DialoGPTUnlikelihoodModel:
 
             train_loss = 0
             for step_num, batch in enumerate(train_dataloader):
-                logger.info(f'Step {step_num}')
+                # logger.info(f'Step {step_num}')
                 ids = batch['input_ids'].to(self.device)
                 batch_rewards = batch['reward'].to(self.device)
                 output = self.model(input_ids=ids, labels=ids)
@@ -131,7 +131,7 @@ class DialoGPTUnlikelihoodModel:
                 if self.parallel:
                     if torch.cuda.device_count() > 1:
                         loss = loss.mean()
-                logger.info(f'Got loss: {loss:.4f}')
+                # logger.info(f'Got loss: {loss:.4f}')
 
                 train_loss += loss.item()
 
