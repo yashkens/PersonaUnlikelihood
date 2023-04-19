@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch.nn import DataParallel
 import logging
 import sys
+from copy import copy
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 logger = logging.getLogger()
@@ -29,7 +30,7 @@ class DialoGPTUnlikelihoodModel:
         output = self.model.generate(new_ids, temperature=0.9, max_length=150, pad_token_id=self.tokenizer.pad_token_id)
         test_res = self.tokenizer.decode(output[0]).replace(test_text, '')
 
-        cur_ids = ids[0][ids[0] != self.tokenizer.pad_token_id]  # cur_ids = ids[0]
+        cur_ids = ids[0][ids[0] != self.tokenizer.pad_token_id]
         last_eos_inds = torch.where(cur_ids == self.tokenizer.eos_token_id)[0]
         if last_eos_inds.shape[-1] == 0:
             context_ids = cur_ids
@@ -54,15 +55,19 @@ class DialoGPTUnlikelihoodModel:
 
     def get_mle_loss(self, notnull, batch_rewards, scores_view, targets_view):
         mle_notnull = notnull & (batch_rewards > 0).expand_as(notnull)
+        print(f'MLE NOTNULL: {mle_notnull}')
         mle_target_tokens = mle_notnull.long().sum()
-        mle_loss = (
+        mle_losses = (
                 F.nll_loss(
-                    scores_view, targets_view, reduction='none'
+                    scores_view, targets_view, reduction='none', ignore_index=self.tokenizer.pad_token_id
                 ).view_as(mle_notnull)
                 * mle_notnull.float()
-        ).sum()
+        )
+        print(f'MLE LOSSES BY TOKEN: {mle_losses}')
+        mle_loss = mle_losses.sum()
         if mle_target_tokens > 0:
             mle_loss /= mle_target_tokens
+        print(f'MLE LOSS: {mle_loss}')
         return mle_loss
 
     def get_ul_loss(self, notnull, batch_rewards, scores_view, targets_view):
@@ -85,11 +90,10 @@ class DialoGPTUnlikelihoodModel:
 
         self.model.eval()
 
-        val_loss = 0
+        val_loss, val_only_nll = 0, 0
         with torch.no_grad():
             for batch in val_dataloader:
                 ids = batch['input_ids'].to(self.device)
-                batch_rewards = batch['reward'].to(self.device)
                 output = self.model(input_ids=ids, labels=ids)
                 scores = output.logits
 
@@ -97,12 +101,19 @@ class DialoGPTUnlikelihoodModel:
                 scores_view = scores.view(-1, scores.size(-1))
                 targets = ids
                 targets_view = targets.view(-1)
-
                 notnull = targets.ne(self.tokenizer.pad_token_id)
-                mle_loss = self.get_mle_loss(notnull, batch_rewards, scores_view, targets_view)
-                ul_loss = self.get_ul_loss(notnull, batch_rewards, scores_view, targets_view)
 
-                loss = mle_loss + ul_loss
+                if self.ul_training:
+                    batch_rewards = batch['reward'].to(self.device)
+
+                    mle_loss = self.get_mle_loss(notnull, batch_rewards, scores_view, targets_view)
+                    ul_loss = self.get_ul_loss(notnull, batch_rewards, scores_view, targets_view)
+
+                    loss = mle_loss + ul_loss
+                    val_only_nll += mle_loss.item()
+                else:
+                    mask = batch['mask'].to(self.device)
+                    loss = self.get_mle_loss(notnull, mask, scores_view, targets_view)
 
                 if self.parallel:
                     if torch.cuda.device_count() > 1:
@@ -133,10 +144,9 @@ class DialoGPTUnlikelihoodModel:
 
             self.model.train()
 
-            train_loss = 0
+            train_loss, train_only_nll = 0, 0
             for step_num, batch in enumerate(train_dataloader):
                 ids = batch['input_ids'].to(self.device)
-                batch_rewards = batch['reward'].to(self.device)
                 output = self.model(input_ids=ids, labels=ids)
                 scores = output.logits
 
@@ -144,12 +154,23 @@ class DialoGPTUnlikelihoodModel:
                 scores_view = scores.view(-1, scores.size(-1))
                 targets = ids
                 targets_view = targets.view(-1)
-
                 notnull = targets.ne(self.tokenizer.pad_token_id)
-                mle_loss = self.get_mle_loss(notnull, batch_rewards, scores_view, targets_view)
-                ul_loss = self.get_ul_loss(notnull, batch_rewards, scores_view, targets_view)
 
-                loss = mle_loss + ul_loss
+                if self.ul_training:
+                    batch_rewards = batch['reward'].to(self.device)
+
+                    mle_loss = self.get_mle_loss(notnull, batch_rewards, scores_view, targets_view)
+                    ul_loss = self.get_ul_loss(notnull, batch_rewards, scores_view, targets_view)
+
+                    loss = mle_loss + ul_loss
+                    train_only_nll += mle_loss.item()
+
+                else:
+                    mask = batch['mask'].to(self.device)
+                    loss = self.get_mle_loss(notnull, mask, scores_view, targets_view)
+                    mle_loss = loss  # for wandb logging
+                    ul_loss = 0  # for wandb logging
+
                 if self.parallel:
                     if torch.cuda.device_count() > 1:
                         loss = loss.mean()
@@ -165,17 +186,23 @@ class DialoGPTUnlikelihoodModel:
                                      'batch train UL loss': ul_loss}
                     wandb.log(losses_to_log)
 
-                if step_num != 0 and step_num % checkpoint_step == 0:
+                if step_num % checkpoint_step == 0:  # and step_num != 0
+                    if step_num == 0:
+                        step_num = 1
                     step_loss = train_loss / step_num
+                    # TODO: use only nll loss in perplexity
                     step_ppl = torch.exp(torch.tensor(step_loss))
                     if sample:
                         prompt, result, test_prompt, test_result = self.sample(ids, step_num, log_wandb)
                         if log_wandb:
                             sample_table.add_data(step_num, prompt, result)
                             sample_table.add_data(step_num, test_prompt, test_result)
-                            wandb.log({"generated_samples": sample_table})
+                            if self.ul_training:
+                                wandb.log({"ul_generated_samples": copy(sample_table)})
+                            else:
+                                wandb.log({"nll_generated_samples": copy(sample_table)})
 
-                    step_val_loss, step_val_ppl = self.validate(val_dataloader)
+                    # step_val_loss, step_val_ppl = self.validate(val_dataloader)
 
                     if log_wandb:
                         wandb.log({
@@ -183,7 +210,7 @@ class DialoGPTUnlikelihoodModel:
                             "step train ppl": step_ppl,
                             "step": step_num + epoch * len(train_dataloader)
                         })
-                        wandb.log({"step val loss": step_val_loss, "step val ppl": step_val_ppl})
+                        # wandb.log({"step val loss": step_val_loss, "step val ppl": step_val_ppl})
 
                 if step_num != 0 and step_num % save_step == 0:
                     torch.save(self.model.state_dict(), f'checkpoint_step_{step_num}_epoch_{epoch}')

@@ -41,7 +41,7 @@ def create_config():
             'value': 2
         },
         'lr': {
-            'value': 1e-04
+            'value': 1e-06
         },
         'batch_size': {
             'value': 6
@@ -50,7 +50,7 @@ def create_config():
             'value': 42
         },
         'loss_type': {
-            'value': 'ul'
+            'value': 'nll'
         }
     })
 
@@ -59,9 +59,12 @@ def create_config():
 
 def collate_regular(examples):
     inputs = []
+    masks = []
     for ex in examples:
         inputs.append(ex['input_ids'])
-    return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=PAD_VALUE)}
+        masks.append(ex['mask'])
+    return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=PAD_VALUE),
+            'mask': pad_sequence(masks, batch_first=True, padding_value=0)}
 
 
 def collate_with_negatives(examples):
@@ -83,21 +86,25 @@ def collate_with_negatives_separately(examples):
         inputs.append(ex['input_ids'])
         rewards.append(ex['reward'])
     return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=PAD_VALUE),
-            'reward': pad_sequence(rewards, batch_first=True, padding_value=PAD_VALUE)}
+            'reward': pad_sequence(rewards, batch_first=True, padding_value=0)}
 
 
 def prepare_data(tokenizer, data_part, loss_type, batch_size):
+    if loss_type == 'nll':
+        data_path = 'data'
+    else:
+        data_path = 'data_neg_sep'
     if data_part == 'only-valid':
-        df = pd.read_csv('data_neg_sep/valid.csv')
+        df = pd.read_csv(f'{data_path}/valid.csv')
         valid = df.iloc[:1500]
         train = df.iloc[1500:]
     else:
-        valid = pd.read_csv('data_neg_sep/valid.csv')
-        train = pd.read_csv('data_neg_sep/train.csv')
+        valid = pd.read_csv(f'{data_path}/valid.csv')
+        train = pd.read_csv(f'{data_path}/train.csv')
 
     if loss_type == 'nll':
-        valid_dataset = PersonaChatDataset(valid, tokenizer, add_negatives=False)
-        train_dataset = PersonaChatDataset(train, tokenizer, add_negatives=False)
+        valid_dataset = PersonaChatDataset(valid, tokenizer)
+        train_dataset = PersonaChatDataset(train, tokenizer)
         train_dataloader = DataLoader(
             train_dataset, batch_size=batch_size, collate_fn=collate_regular, shuffle=True
         )
@@ -123,7 +130,7 @@ def train_net(config=None):
         random.seed(config.seed)
         np.random.seed(config.seed)
 
-        name_str = f"{config.loss_type}-loss_{config.data_part}-data"
+        name_str = f"{config.loss_type}-loss_{config.data_part}-data_my-loss"
         run.name = name_str
 
         tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
@@ -142,7 +149,7 @@ def train_net(config=None):
         optimizer = torch.optim.AdamW(params=model.parameters(), lr=config.lr)
         device = 'cuda'
         if config.loss_type == 'nll':
-            answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device='cuda', parallel=False)
+            answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device, ul_training=False)
         else:
             answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device, ul_training=True)
         trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer,
@@ -151,7 +158,6 @@ def train_net(config=None):
 
 def debug_train(loss_type, batch_size):
     tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
-    # tokenizer._pad_token = tokenizer.eos_token
     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     tokenizer.add_special_tokens({'additional_special_tokens': ['<|persona|>']})
     model = AutoModelForCausalLM.from_pretrained("microsoft/DialoGPT-medium")
@@ -165,7 +171,11 @@ def debug_train(loss_type, batch_size):
     )
 
     optimizer = torch.optim.AdamW(params=model.parameters(), lr=1e-04)
-    answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device='cuda', parallel=False, ul_training=True)
+    device = 'cuda'
+    if loss_type == 'nll':
+        answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device, ul_training=False)
+    else:
+        answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device, ul_training=True)
     trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer, log_wandb=False, sample=True)
 
 
