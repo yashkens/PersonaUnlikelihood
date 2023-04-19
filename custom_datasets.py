@@ -110,6 +110,9 @@ class NegativesAsSeparateExDataset(Dataset):
         # rewards are given only to responses
         # so loss will be computed only for responses too
         reward_seq = [0] * (persona_encoding.shape[-1] + context_len)
+        # upd: relevant only for negatives; positives got losses on all tokens
+        # if reward_value > 0:
+        #     reward_seq = [reward_value] * (persona_encoding.shape[-1] + context_len)
         reward_seq.extend([reward_value] * response_encoding.shape[-1])
         reward_seq = torch.tensor(reward_seq)
         return {'input_ids': encoding, 'reward': reward_seq}

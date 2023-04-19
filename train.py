@@ -18,6 +18,8 @@ parser.add_argument('--debug', help="if True, logging is in cmd instead of wandb
 parser.add_argument("--loss", help="choose loss: nll or ul", type=str, default='nll')
 parser.add_argument("--bs", help="batch size", type=int, default=1)
 
+PAD_VALUE = 50257
+
 
 def create_config():
     sweep_config = {'method': 'grid'}
@@ -36,13 +38,13 @@ def create_config():
 
     parameters_dict.update({
         'epochs': {
-            'value': 3
+            'value': 2
         },
         'lr': {
             'value': 1e-04
         },
         'batch_size': {
-            'value': 4
+            'value': 6
         },
         'seed': {
             'value': 42
@@ -59,7 +61,7 @@ def collate_regular(examples):
     inputs = []
     for ex in examples:
         inputs.append(ex['input_ids'])
-    return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=50256)}
+    return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=PAD_VALUE)}
 
 
 def collate_with_negatives(examples):
@@ -68,11 +70,11 @@ def collate_with_negatives(examples):
         inputs.append(ex['input_ids'])
         negs.append(ex['negatives'].T)
         conts.append(ex['context'])
-    negatives = pad_sequence(negs, batch_first=True, padding_value=50256)
+    negatives = pad_sequence(negs, batch_first=True, padding_value=PAD_VALUE)
     negatives.transpose(2, 1)
-    return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=50256),
+    return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=PAD_VALUE),
             'negatives': negatives,
-            'context': pad_sequence(conts, batch_first=True, padding_value=50256)}
+            'context': pad_sequence(conts, batch_first=True, padding_value=PAD_VALUE)}
 
 
 def collate_with_negatives_separately(examples):
@@ -80,8 +82,8 @@ def collate_with_negatives_separately(examples):
     for ex in examples:
         inputs.append(ex['input_ids'])
         rewards.append(ex['reward'])
-    return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=50256),
-            'reward': pad_sequence(rewards, batch_first=True, padding_value=50256)}
+    return {'input_ids': pad_sequence(inputs, batch_first=True, padding_value=PAD_VALUE),
+            'reward': pad_sequence(rewards, batch_first=True, padding_value=PAD_VALUE)}
 
 
 def prepare_data(tokenizer, data_part, loss_type, batch_size):
@@ -125,7 +127,7 @@ def train_net(config=None):
         run.name = name_str
 
         tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
-        tokenizer._pad_token = tokenizer.eos_token
+        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
         tokenizer.add_special_tokens({'additional_special_tokens': ['<|persona|>']})
         model = AutoModelForCausalLM.from_pretrained("microsoft/DialoGPT-medium")
         model.resize_token_embeddings(len(tokenizer))
@@ -143,12 +145,14 @@ def train_net(config=None):
             answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device='cuda', parallel=False)
         else:
             answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device, ul_training=True)
-        trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer, log_wandb=True, sample=False)
+        trained_model = answer_model.train(train_dataloader, valid_dataloader, optimizer,
+                                           log_wandb=True, sample=True, checkpoint_step=200)
 
 
 def debug_train(loss_type, batch_size):
     tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
-    tokenizer._pad_token = tokenizer.eos_token
+    # tokenizer._pad_token = tokenizer.eos_token
+    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     tokenizer.add_special_tokens({'additional_special_tokens': ['<|persona|>']})
     model = AutoModelForCausalLM.from_pretrained("microsoft/DialoGPT-medium")
     model.resize_token_embeddings(len(tokenizer))
@@ -173,5 +177,5 @@ if __name__ == "__main__":
         wandb.login()
 
         sweep_config = create_config()
-        sweep_id = wandb.sweep(sweep_config, project="unlikelihood-loss")
+        sweep_id = wandb.sweep(sweep_config, project="unlikelihood-loss-bullshit")
         wandb.agent(sweep_id, train_net)

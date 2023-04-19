@@ -22,16 +22,35 @@ class DialoGPTUnlikelihoodModel:
         else:
             self.model.to(device)
 
-    def sample(self, ids, step_num):
-        logger.info(f'Generating a sample at step num {step_num}...')
-        output = self.model.generate(ids, temperature=0.9, max_length=150)
-        for k, out in enumerate(output):
-            last_eos_ind = torch.where(ids[k] == self.tokenizer.eos_token_id)[0][-1]
-            context_ids = ids[k][:int(last_eos_ind) + 1]
-            prompt = self.tokenizer.decode(context_ids)
-            decoded_output = self.tokenizer.decode(out)
+    def sample(self, ids, step_num, log_wandb):
+        test_text = 'i like to go to country concerts on weekends.\ni have two dogs.\nmy favorite music is country.\n' \
+                    'i like to work on vintage cars. <|persona|> do you have any pets? <|endoftext|>'
+        new_ids = self.tokenizer.encode(test_text, return_tensors='pt').to(self.device)
+        output = self.model.generate(new_ids, temperature=0.9, max_length=150, pad_token_id=self.tokenizer.pad_token_id)
+        test_res = self.tokenizer.decode(output[0]).replace(test_text, '')
+
+        cur_ids = ids[0][ids[0] != self.tokenizer.pad_token_id]  # cur_ids = ids[0]
+        last_eos_inds = torch.where(cur_ids == self.tokenizer.eos_token_id)[0]
+        if last_eos_inds.shape[-1] == 0:
+            context_ids = cur_ids
+        else:
+            context_ids = cur_ids[:int(last_eos_inds[-1]) + 1]
+        output = self.model.generate(
+            context_ids.unsqueeze(0),
+            temperature=0.9,
+            max_length=150,
+            pad_token_id=self.tokenizer.pad_token_id
+        )
+        prompt = self.tokenizer.decode(context_ids)
+        decoded_output = self.tokenizer.decode(output[0])
+        result = decoded_output.replace(prompt, '')
+        if not log_wandb:
+            logger.info(f'Generated sample at step num {step_num}...')
+            logger.info(f'Test Input: {test_text}')
+            logger.info(f'Test Output: {test_res}')
             logger.info(f'Input: {prompt}')
-            logger.info(f'Output: {decoded_output.replace(prompt, "")}')
+            logger.info(f'Output: {result}')
+        return prompt, result, test_text, test_res
 
     def get_mle_loss(self, notnull, batch_rewards, scores_view, targets_view):
         mle_notnull = notnull & (batch_rewards > 0).expand_as(notnull)
@@ -104,7 +123,11 @@ class DialoGPTUnlikelihoodModel:
             checkpoint_step=50,
             log_wandb=False,
             sample=False,
+            save_step=3000,
     ):
+
+        if log_wandb and sample:
+            sample_table = wandb.Table(columns=['step', 'input', 'output'])
 
         for epoch in range(n_epoch):
 
@@ -112,7 +135,6 @@ class DialoGPTUnlikelihoodModel:
 
             train_loss = 0
             for step_num, batch in enumerate(train_dataloader):
-                # logger.info(f'Step {step_num}')
                 ids = batch['input_ids'].to(self.device)
                 batch_rewards = batch['reward'].to(self.device)
                 output = self.model(input_ids=ids, labels=ids)
@@ -131,7 +153,6 @@ class DialoGPTUnlikelihoodModel:
                 if self.parallel:
                     if torch.cuda.device_count() > 1:
                         loss = loss.mean()
-                # logger.info(f'Got loss: {loss:.4f}')
 
                 train_loss += loss.item()
 
@@ -148,7 +169,11 @@ class DialoGPTUnlikelihoodModel:
                     step_loss = train_loss / step_num
                     step_ppl = torch.exp(torch.tensor(step_loss))
                     if sample:
-                        self.sample(ids, step_num)
+                        prompt, result, test_prompt, test_result = self.sample(ids, step_num, log_wandb)
+                        if log_wandb:
+                            sample_table.add_data(step_num, prompt, result)
+                            sample_table.add_data(step_num, test_prompt, test_result)
+                            wandb.log({"generated_samples": sample_table})
 
                     step_val_loss, step_val_ppl = self.validate(val_dataloader)
 
@@ -159,6 +184,9 @@ class DialoGPTUnlikelihoodModel:
                             "step": step_num + epoch * len(train_dataloader)
                         })
                         wandb.log({"step val loss": step_val_loss, "step val ppl": step_val_ppl})
+
+                if step_num != 0 and step_num % save_step == 0:
+                    torch.save(self.model.state_dict(), f'checkpoint_step_{step_num}_epoch_{epoch}')
 
             avg_val_loss, val_ppl = self.validate(val_dataloader)
             avg_train_loss = train_loss / len(train_dataloader)
