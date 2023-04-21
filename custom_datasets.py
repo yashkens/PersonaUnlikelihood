@@ -1,5 +1,4 @@
 import torch
-from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
 
@@ -7,9 +6,10 @@ MAX_NEG_EXAMPLES = 2
 
 
 class PersonaChatDataset(Dataset):
-    def __init__(self, data, tokenizer):
+    def __init__(self, data, tokenizer, mask_context):
         self.tokenizer = tokenizer
         self.data = data
+        self.mask_context_for_positives = mask_context
         self.columns = ['context_3', 'context_2', 'context_1', 'response']
 
     def encode_persona(self, idx):
@@ -43,7 +43,11 @@ class PersonaChatDataset(Dataset):
         else:
             encoding = torch.cat([persona_encoding, response_encoding], dim=-1)
             context_len = 0
-        mask = [0] * (persona_encoding.shape[-1] + context_len)
+
+        if self.mask_context_for_positives:
+            mask = [0] * (persona_encoding.shape[-1] + context_len)
+        else:
+            mask = [1] * (persona_encoding.shape[-1] + context_len)
         mask.extend([1] * response_encoding.shape[-1])
         mask = torch.tensor(mask)
 
@@ -54,9 +58,10 @@ class PersonaChatDataset(Dataset):
 
 
 class NegativesAsSeparateExDataset(Dataset):
-    def __init__(self, data, tokenizer):
+    def __init__(self, data, tokenizer, mask_context):
         self.tokenizer = tokenizer
         self.data = data
+        self.mask_context_for_positives = mask_context
         self.columns = ['context_3', 'context_2', 'context_1', 'response']
 
     def encode_persona(self, idx):
@@ -97,9 +102,10 @@ class NegativesAsSeparateExDataset(Dataset):
         # rewards are given only to responses
         # so loss will be computed only for responses too
         reward_seq = [0] * (persona_encoding.shape[-1] + context_len)
-        # upd: relevant only for negatives; positives got losses on all tokens
-        # if reward_value > 0:
-        #     reward_seq = [reward_value] * (persona_encoding.shape[-1] + context_len)
+        # if true allow losses on all tokens for positive examples
+        if not self.mask_context_for_positives:
+            if reward_value > 0:
+                reward_seq = [reward_value] * (persona_encoding.shape[-1] + context_len)
         reward_seq.extend([reward_value] * response_encoding.shape[-1])
         reward_seq = torch.tensor(reward_seq)
         return {'input_ids': encoding, 'reward': reward_seq}
