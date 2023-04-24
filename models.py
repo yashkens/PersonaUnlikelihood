@@ -90,7 +90,6 @@ class DialoGPTUnlikelihoodModel:
                 )
                 * ul_notnull.float()
         ).sum()
-        # TODO: why parlAI logs losses before average?
         if ul_target_tokens > 0:
             ul_loss /= ul_target_tokens
         return ul_loss

@@ -184,7 +184,7 @@ def train_net(config=None):
             valid_dataloader,
             optimizer,
             log_wandb=True,
-            sample=False,
+            sample=True,
             checkpoint_step=1000,
             save_step=3000,
             save_suffix=config.suffix
