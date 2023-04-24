@@ -183,7 +183,7 @@ def train_net(config=None):
             train_dataloader,
             valid_dataloader,
             optimizer,
-            log_wandb=False,
+            log_wandb=True,
             sample=False,
             checkpoint_step=1000,
             save_step=3000,
