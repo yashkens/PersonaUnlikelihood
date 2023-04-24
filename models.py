@@ -12,27 +12,29 @@ logger = logging.getLogger()
 
 class DialoGPTUnlikelihoodModel:
 
-    def __init__(self, model, tokenizer, device, ul_training=False, parallel=False):
+    def __init__(self, model, tokenizer, device, ul_weight=1.0, ul_training=False, parallel=False):
         self.model = model
         self.tokenizer = tokenizer
         self.ul_training = ul_training
         self.device = device
         self.parallel = parallel
         self.save_dir = 'ul_save' if ul_training else 'nll_save'
+        self.ul_weight = ul_weight
         if self.parallel:
             self.model = DataParallel(self.model).to(device)
         else:
             self.model.to(device)
 
     def sample(self, ids, step_num, log_wandb):
-        self.model.eval()
+        self.model.eval()  # TODO: model.module for parallel ?
         with torch.no_grad():
             test_text = 'i like to go to country concerts on weekends.\ni have two dogs.\n' \
                         'my favorite music is country.\ni like to work on vintage cars. ' \
                         '<|persona|> do you have any pets? <|endoftext|>'
             new_ids = self.tokenizer.encode(test_text, return_tensors='pt').to(self.device)
             if self.parallel:
-                output = self.model.module.generate(new_ids, temperature=0.9, max_length=150, pad_token_id=self.tokenizer.pad_token_id)
+                output = self.model.module.generate(new_ids, temperature=0.9, max_length=150,
+                                                    pad_token_id=self.tokenizer.pad_token_id)
             else:
                 output = self.model.generate(new_ids, temperature=0.9, max_length=150,
                                              pad_token_id=self.tokenizer.pad_token_id)
@@ -119,7 +121,7 @@ class DialoGPTUnlikelihoodModel:
 
                     mle_loss = self.get_mle_loss(notnull, shift_rewards, scores_view, targets_view)
                     ul_loss = self.get_ul_loss(notnull, shift_rewards, scores_view, targets_view)
-                    loss = mle_loss + ul_loss
+                    loss = mle_loss + self.ul_weight * ul_loss
                     positive_count += ((batch_rewards > 0).sum(dim=-1) > 0).sum()
                 else:
                     mask = batch['mask'].to(self.device)
@@ -152,10 +154,14 @@ class DialoGPTUnlikelihoodModel:
             log_wandb=False,
             sample=False,
             save_step=3000,
+            save_suffix=''
     ):
 
         if log_wandb and sample:
             sample_table = wandb.Table(columns=['step', 'input', 'output'])
+
+        if save_suffix:
+            save_suffix = '_' + save_suffix
 
         for epoch in range(n_epoch):
 
@@ -183,7 +189,7 @@ class DialoGPTUnlikelihoodModel:
 
                     mle_loss = self.get_mle_loss(notnull, shift_rewards, scores_view, targets_view)
                     ul_loss = self.get_ul_loss(notnull, shift_rewards, scores_view, targets_view)
-                    loss = mle_loss + ul_loss
+                    loss = mle_loss + self.ul_weight * ul_loss
                     train_only_nll += mle_loss.item()
                     positive_count += ((batch_rewards > 0).sum(dim=-1) > 0).sum()
                 else:
@@ -251,7 +257,10 @@ class DialoGPTUnlikelihoodModel:
                         state_dict = self.model.module.state_dict()
                     else:
                         state_dict = self.model.state_dict()
-                    torch.save(state_dict, f'{self.save_dir}/checkpoint_step_{step_num}_epoch_{epoch}.pt')
+                    torch.save(
+                        state_dict,
+                        f'{self.save_dir}/checkpoint_step_{step_num}_epoch_{epoch}{save_suffix}.pt'
+                    )
 
             avg_val_loss, val_ppl = self.validate(val_dataloader)
             avg_train_loss = train_loss / len(train_dataloader)
@@ -261,7 +270,10 @@ class DialoGPTUnlikelihoodModel:
                 state_dict = self.model.module.state_dict()
             else:
                 state_dict = self.model.state_dict()
-            torch.save(state_dict, f'{self.save_dir}/checkpoint_step_epoch_{epoch}.pt')
+            torch.save(
+                state_dict,
+                f'{self.save_dir}/checkpoint_step_epoch_{epoch}{save_suffix}.pt'
+            )
 
             if log_wandb:
                 wandb.log({"train loss": avg_train_loss, "val loss": avg_val_loss,

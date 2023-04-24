@@ -22,6 +22,8 @@ parser.add_argument("--data", help="'only-valid' for testing or 'full' for train
 parser.add_argument("--mask_context", help="if True, loss will be computed only on response tokens", action='store_true')
 parser.add_argument("--parallel", help="if True, use multiple gpus", action='store_true')
 parser.add_argument('-n', "--project_name", help="name of the wandb project", type=str, default='unlikelihood-loss')
+parser.add_argument("--alpha", help="weights of the unlikelihood loss", type=float, default=1.0)
+parser.add_argument("--suffix", help="suffix for model save name", type=str, default='')
 
 PAD_VALUE = 50257
 
@@ -62,6 +64,12 @@ def create_config(args):
         },
         'parallel': {
             'value': args.parallel
+        },
+        'alpha': {
+            'value': args.alpha
+        },
+        'suffix': {
+            'value': args.suffix
         }
     })
 
@@ -144,7 +152,7 @@ def train_net(config=None):
         masking_status = 'with_context'
         if config.mask_context:
             masking_status = 'mask_context'
-        name_str = f"{config.loss_type}_loss-{masking_status}"
+        name_str = f"{config.loss_type}_loss-{masking_status}_alpha-{config.alpha}"
         run.name = name_str
 
         tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
@@ -169,16 +177,17 @@ def train_net(config=None):
             )
         else:
             answer_model = DialoGPTUnlikelihoodModel(
-                model, tokenizer, device=device, ul_training=True, parallel=config.parallel
+                model, tokenizer, device=device, ul_weight=config.alpha, ul_training=True, parallel=config.parallel
             )
         trained_model = answer_model.train(
             train_dataloader,
             valid_dataloader,
             optimizer,
-            log_wandb=True,
-            sample=True,
+            log_wandb=False,
+            sample=False,
             checkpoint_step=1000,
-            save_step=3000
+            save_step=3000,
+            save_suffix=config.suffix
         )
 
 
@@ -203,7 +212,9 @@ def debug_train(args):
     ul_training = True
     if args.loss == 'nll':
         ul_training = False
-    answer_model = DialoGPTUnlikelihoodModel(model, tokenizer, device=device, ul_training=ul_training, parallel=args.parallel)
+    answer_model = DialoGPTUnlikelihoodModel(
+        model, tokenizer, device=device, ul_weight=args.alpha, ul_training=ul_training, parallel=args.parallel
+    )
     trained_model = answer_model.train(
         train_dataloader,
         valid_dataloader,
@@ -211,7 +222,8 @@ def debug_train(args):
         checkpoint_step=500,
         save_step=2000,
         log_wandb=False,
-        sample=True
+        sample=True,
+        save_suffix=args.suffix
     )
 
 
