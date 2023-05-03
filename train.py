@@ -152,7 +152,9 @@ def train_net(config=None):
         masking_status = 'with_context'
         if config.mask_context:
             masking_status = 'mask_context'
-        name_str = f"{config.loss_type}_loss-{masking_status}_alpha-{config.alpha}"
+        if config.suffix:
+            suffix = '_' + config.suffix
+        name_str = f"{config.loss_type}_loss-{masking_status}_alpha-{config.alpha}{suffix}"
         run.name = name_str
 
         tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")

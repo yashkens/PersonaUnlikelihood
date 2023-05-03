@@ -34,6 +34,7 @@ class PersonaChatDataset(Dataset):
                 context += ' <|endoftext|> '
             else:
                 response += input_tokens
+                response += ' <|endoftext|> '
 
         response_encoding = self.tokenizer.encode(response, return_tensors='pt').squeeze(0)
         if context:
@@ -88,6 +89,7 @@ class NegativesAsSeparateExDataset(Dataset):
                 context += ' <|endoftext|> '
             else:
                 response += input_tokens
+                response += ' <|endoftext|> '
 
         response_encoding = self.tokenizer.encode(response, return_tensors='pt').squeeze(0)
 

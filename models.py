@@ -103,7 +103,7 @@ class DialoGPTUnlikelihoodModel:
         with torch.no_grad():
             for batch in val_dataloader:
                 ids = batch['input_ids'].to(self.device)
-                output = self.model(input_ids=ids, labels=ids)
+                output = self.model(input_ids=ids)
                 scores = output.logits
 
                 shift_scores = scores[..., :-1, :].contiguous()
@@ -171,7 +171,7 @@ class DialoGPTUnlikelihoodModel:
             for step_num, batch in enumerate(train_dataloader):
 
                 ids = batch['input_ids'].to(self.device)
-                output = self.model(input_ids=ids, labels=ids)
+                output = self.model(input_ids=ids)
                 scores = output.logits
 
                 shift_scores = scores[..., :-1, :].contiguous()
