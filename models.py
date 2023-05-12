@@ -1,3 +1,4 @@
+import re
 import torch
 import wandb
 import torch.nn.functional as F
@@ -24,13 +25,13 @@ class DialoGPTUnlikelihoodModel:
             self.model = DataParallel(self.model).to(device)
         else:
             self.model.to(device)
+        self.answer_split_pattern = re.compile("@@ПЕРВЫЙ@@|@@ВТОРОЙ@@")
 
     def sample(self, ids, step_num, log_wandb):
         self.model.eval()  # TODO: model.module for parallel ?
         with torch.no_grad():
-            test_text = 'i like to go to country concerts on weekends.\ni have two dogs.\n' \
-                        'my favorite music is country.\ni like to work on vintage cars. ' \
-                        '<|persona|> do you have any pets? <|endoftext|>'
+            test_text = 'Я строитель.\nЯ холост.\nУ меня нет детей.\nЯ не люблю путешествовать.\nЯ не слушаю рок. ' \
+                        '@@ПЕРСОНА@@ @@ПЕРВЫЙ@@ Расскажи немного о себе! @@ВТОРОЙ@@'
             new_ids = self.tokenizer.encode(test_text, return_tensors='pt').to(self.device)
             if self.parallel:
                 output = self.model.module.generate(new_ids, temperature=0.9, max_length=150,
@@ -63,6 +64,10 @@ class DialoGPTUnlikelihoodModel:
                 logger.info(f'Test Output: {test_res}')
                 logger.info(f'Input: {prompt}')
                 logger.info(f'Output: {result}')
+        print(f'PROMPT: {prompt}')
+        print(f'RESULT: {result}')
+        print(f' TEST PROMPT: {test_text}')
+        print(f'TEST RESULT: {test_res}')
         return prompt, result, test_text, test_res
 
     def get_mle_loss(self, notnull, batch_rewards, scores_view, targets_view):
@@ -77,6 +82,7 @@ class DialoGPTUnlikelihoodModel:
         mle_loss = mle_losses.sum()
         if mle_target_tokens > 0:
             mle_loss /= mle_target_tokens
+        # print(f'MLE LOSS: {mle_loss}')
         return mle_loss
 
     def get_ul_loss(self, notnull, batch_rewards, scores_view, targets_view):
@@ -84,6 +90,8 @@ class DialoGPTUnlikelihoodModel:
         ul_target_tokens = ul_notnull.long().sum()
         range_ = torch.arange(targets_view.size(0)).to(self.device)
         ul_scores = scores_view[range_, targets_view]
+        # print(f'UL SCORES: {ul_scores}')
+        # print(f'UL NOTNULL: {ul_notnull}')
         ul_loss = (
                 -torch.log(torch.clamp(1.0 - ul_scores.exp(), min=1e-6)).view_as(
                     ul_notnull
@@ -92,6 +100,7 @@ class DialoGPTUnlikelihoodModel:
         ).sum()
         if ul_target_tokens > 0:
             ul_loss /= ul_target_tokens
+        # print(f'UL LOSS: {ul_loss}')
         return ul_loss
 
     def validate(self, val_dataloader):
@@ -123,7 +132,7 @@ class DialoGPTUnlikelihoodModel:
                     loss = mle_loss + self.ul_weight * ul_loss
                     positive_count += ((batch_rewards > 0).sum(dim=-1) > 0).sum()
                 else:
-                    mask = batch['mask'].to(self.device)
+                    mask = batch['reward'].to(self.device)
                     shift_mask = mask[..., 1:].contiguous()
                     mle_loss = self.get_mle_loss(notnull, shift_mask, scores_view, targets_view)
                     loss = mle_loss
@@ -192,7 +201,7 @@ class DialoGPTUnlikelihoodModel:
                     train_only_nll += mle_loss.item()
                     positive_count += ((batch_rewards > 0).sum(dim=-1) > 0).sum()
                 else:
-                    mask = batch['mask'].to(self.device)
+                    mask = batch['reward'].to(self.device)
                     shift_mask = mask[..., 1:].contiguous()
                     loss = self.get_mle_loss(notnull, shift_mask, scores_view, targets_view)
                     mle_loss = loss  # for wandb logging

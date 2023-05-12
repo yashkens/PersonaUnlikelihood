@@ -115,6 +115,9 @@ def prepare_data(tokenizer, data_part, loss_type, batch_size, mask_context):
         data_path = 'data_neg_sep'
     if data_part == 'only-valid':
         df = pd.read_csv(f'{data_path}/valid.csv')
+        only_pos_df = df[df['reward'] == 1]
+        only_neg_df = df[df['reward'] == -1].sample(n=1500)
+        df = pd.concat([only_neg_df, only_pos_df]).sample(frac=1)
         valid = df.iloc[:1500]
         train = df.iloc[1500:]
     else:
